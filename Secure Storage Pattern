@@ -1,0 +1,65 @@
+import os
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+# ================= CONFIG =================
+FOLDER      = r"[Put your destination here!!]"
+PLAIN_FILE  = os.path.join(FOLDER, "data.txt")
+ENC_FILE    = os.path.join(FOLDER, "data.enc")
+KEY_FILE    = os.path.join(FOLDER, "secret.key")
+
+# ================= KEY =================
+def load_or_create_key() -> bytes:
+    """Retrieve a 32-byte key (AES-256) from file, or generate a new one."""
+    if os.path.exists(KEY_FILE):
+        with open(KEY_FILE, "rb") as f:
+            return f.read()
+    key = AESGCM.generate_key(bit_length=256)
+    with open(KEY_FILE, "wb") as f:
+        f.write(key)
+    return key
+
+# ================= AES-256-GCM =================
+def aes_encrypt(plaintext: str, key: bytes) -> bytes:
+    aesgcm = AESGCM(key)
+    nonce = os.urandom(12)                    # 12-byte random nonce
+    return nonce + aesgcm.encrypt(nonce, plaintext.encode("utf-8"), None)
+
+def aes_decrypt(data: bytes, key: bytes) -> str:
+    aesgcm = AESGCM(key)
+    nonce, ciphertext = data[:12], data[12:]
+    return aesgcm.decrypt(nonce, ciphertext, None).decode("utf-8")
+
+# ================= SAVE / READ =================
+def save_secure(text: str):
+    """Save plaintext to data.txt AND ciphertext to data.enc."""
+    os.makedirs(FOLDER, exist_ok=True)
+    key = load_or_create_key()
+    enc = aes_encrypt(text, key)
+
+    with open(PLAIN_FILE, "w", encoding="utf-8") as f:
+        f.write(text)
+    with open(ENC_FILE, "wb") as f:
+        f.write(enc)
+
+    print(f"Plain  : {PLAIN_FILE}")
+    print(f"Enc    : {ENC_FILE} ({len(enc)} bytes)")
+    print(f"Key    : {KEY_FILE}")
+
+def read_secure() -> str:
+    """Read data.enc, decrypt using the key."""
+    key = load_or_create_key()
+    with open(ENC_FILE, "rb") as f:
+        enc = f.read()
+    return aes_decrypt(enc, key)
+
+# ================= MAIN =================
+if __name__ == "__main__":
+    word = "AnyWordHere!!"
+    print(f"Stored text : {word}\n")
+
+    save_secure(word)
+
+    print("\n--- Read back from encrypted file ---")
+    result = read_secure()
+    print(f"Decryption result       : {result}")
+    print(f"Verification          : {'MATCH' if result == word else 'MISMATCH'}")
