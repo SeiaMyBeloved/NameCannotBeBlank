@@ -1,0 +1,146 @@
+import hashlib
+import itertools
+import string
+import time
+import os
+import bcrypt
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from multiprocessing import Pool, cpu_count
+
+
+# ================= MD5 =================
+def md5_hash(text: str) -> str:
+    return hashlib.md5(text.encode()).hexdigest()
+
+
+# Dictionary attack (matches against a wordlist)
+def md5_dictionary_attack(target_hash: str, wordlist: list[str]) -> str | None:
+    for word in wordlist:
+        if md5_hash(word) == target_hash:
+            return word
+    return None
+
+
+# True bruteforce (tries all combinations)
+def _md5_worker(args):
+    target_hash, candidates = args
+    for c in candidates:
+        if hashlib.md5(c.encode()).hexdigest() == target_hash:
+            return c
+    return None
+
+
+def _chunks(iterable, size):
+    batch = []
+    for item in iterable:
+        batch.append(item)
+        if len(batch) >= size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
+
+
+def md5_bruteforce(target_hash: str, max_length: int = 6,
+                   charset: str = string.ascii_lowercase + string.digits,
+                   chunk_size: int = 50_000) -> str | None:
+    """True bruteforce: tries all character combinations up to max_length."""
+    start = time.time()
+    for length in range(1, max_length + 1):
+        space = len(charset) ** length
+        print(f"  length={length} ({space:,} combos) ", end="", flush=True)
+        gen = (''.join(p) for p in itertools.product(charset, repeat=length))
+        jobs = ((target_hash, chunk) for chunk in _chunks(gen, chunk_size))
+        with Pool(cpu_count()) as pool:
+            for result in pool.imap_unordered(_md5_worker, jobs):
+                if result:
+                    pool.terminate()
+                    print(f"-> FOUND '{result}' in {time.time()-start:.2f}s")
+                    return result
+        print(f"Done {time.time()-start:.2f}s")
+    print(f"  NOT FOUND in {time.time()-start:.2f}s")
+    return None
+
+
+# ================= BCRYPT =================
+def bcrypt_hash(text: str) -> str:
+    return bcrypt.hashpw(text.encode(), bcrypt.gensalt()).decode()
+
+
+def bcrypt_verify(text: str, hashed: str) -> bool:
+    return bcrypt.checkpw(text.encode(), hashed.encode())
+
+
+# ================= ARGON2 =================
+_ph = PasswordHasher()
+
+
+def argon2_hash(text: str) -> str:
+    return _ph.hash(text)
+
+
+def argon2_verify(text: str, hashed: str) -> bool:
+    try:
+        return _ph.verify(hashed, text)
+    except VerifyMismatchError:
+        return False
+
+
+# ================= AES-256-GCM =================
+def aes_encrypt(plaintext: str, key: bytes) -> bytes:
+    aesgcm = AESGCM(key)
+    nonce = os.urandom(12)
+    return nonce + aesgcm.encrypt(nonce, plaintext.encode(), None)
+
+
+def aes_decrypt(data: bytes, key: bytes) -> str:
+    aesgcm = AESGCM(key)
+    nonce, ciphertext = data[:12], data[12:]
+    return aesgcm.decrypt(nonce, ciphertext, None).decode()
+
+
+# ================== DEMO ==================
+if __name__ == "__main__":
+    text = "teio"   
+
+    print("=" * 60)
+    print(f"Original text : {text}")
+    print("=" * 60)
+
+    # --- MD5: dictionary vs bruteforce ---
+    md5_val = md5_hash(text)
+    print(f"\n[MD5]")
+    print(f"Hash : {md5_val}")
+
+    print(f"\nDictionary attack (small wordlist, text not present):")
+    res = md5_dictionary_attack(md5_val, ['admin', '123', 'password', 'qwerty'])
+    print(f"  Result: {res}")
+
+    print(f"\nTrue bruteforce (lowercase+digits, max 5):")
+    md5_bruteforce(md5_val, max_length=5)
+
+    # --- Bcrypt ---
+    bc_val = bcrypt_hash(text)
+    print(f"\n[BCRYPT]")
+    print(f"Hash         : {bc_val}")
+    print(f"Verify correct : {bcrypt_verify(text, bc_val)}")
+    print(f"Verify wrong   : {bcrypt_verify('wrong', bc_val)}")
+    print(f"Bruteforce   : practically impossible (cost=12 approx 250ms/hash)")
+
+    # --- Argon2 ---
+    ar_val = argon2_hash(text)
+    print(f"\n[ARGON2]")
+    print(f"Hash         : {ar_val}")
+    print(f"Verify correct : {argon2_verify(text, ar_val)}")
+    print(f"Verify wrong   : {argon2_verify('wrong', ar_val)}")
+    print(f"Bruteforce   : practically impossible (64MB memory, 3 iterations)")
+
+    # --- AES ---
+    key = AESGCM.generate_key(bit_length=256)
+    ct = aes_encrypt(text, key)
+    print(f"\n[AES-256-GCM]")
+    print(f"Key (hex)    : {key.hex()}")
+    print(f"Ciphertext   : {ct.hex()}")
+    print(f"Decrypt      : {aes_decrypt(ct, key)}")
